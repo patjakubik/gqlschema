@@ -48,9 +48,8 @@ gqlschema -endpoint <url> [flags]
  
 ```sh
 gqlschema \
-  -endpoint https://your-shop.myshopify.com/admin/api/unstable/graphql.json \
-  -header "X-Shopify-Access-Token: $SHOPIFY_ACCESS_TOKEN" \
-  -out schema
+  -endpoint https://your-shop.myshopify.com/admin/api/unstable/graphql \
+  -header "X-Shopify-Access-Token: $SHOPIFY_ACCESS_TOKEN"
 ```
  
 Writes `schema.graphql` (pass `-no-descriptions` to omit descriptions from it).
@@ -60,7 +59,7 @@ Writes `schema.graphql` (pass `-no-descriptions` to omit descriptions from it).
 Point genqlient's `schema:` at the generated file and chain both steps in `go generate`. genqlient ignores descriptions, so the default output works directly; pass `-no-descriptions` if you'd rather feed it a smaller description-free file:
  
 ```go
-//go:generate go tool gqlschema -endpoint $(GQL_ENDPOINT) -header "X-Shopify-Access-Token: $(SHOPIFY_TOKEN)" -out output/admin/unstable
+//go:generate go tool gqlschema -endpoint https://your-shop.myshopify.com/admin/api/unstable/graphql -header "X-Shopify-Access-Token: $(SHOPIFY_ACCESS_TOKEN)"
 //go:generate go tool genqlient
 ```
  
