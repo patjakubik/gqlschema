@@ -1,0 +1,5 @@
+# Generated GraphQL schema output
+*.graphql
+
+# Built binary
+/gqlschema
