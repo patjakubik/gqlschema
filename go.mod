@@ -1,3 +1,3 @@
 module github.com/patjakubik/gqlschema
 
-go 1.25.0
+go 1.24.0

@@ -6,18 +6,19 @@ genqlient deliberately does not introspect remote endpoints; it expects an SDL s
  
 ## Features
  
-- Standard full introspection query (deprecated fields, directives, `isRepeatable`, `specifiedByURL`, input-value deprecation).
+- Standard full introspection query (deprecated fields, directives, `isRepeatable`, `specifiedByURL`, `@oneOf` input objects, input-value deprecation).
 - Emits SDL, not raw introspection JSON.
-- Writes a single `<out>.graphql`; descriptions are included by default and omitted with `-no-descriptions`.
+- Writes a single file named by `-out`; descriptions — including field-argument descriptions — are included by default and omitted with `-no-descriptions`.
 - Handles servers whose root types are non-default (for example Shopify's `QueryRoot`).
 - Surfaces GraphQL errors returned in a `200` body instead of failing opaquely.
 - Repeatable `-header` flag for auth and any other request headers.
+- Optional `-sort` (mirroring graphql-js's `lexicographicSortSchema`) so output stays stable when a server returns definitions in a different order between runs — useful when committing the schema to track changes over time.
 - Optional `-stamp` header comment recording the generator, version, endpoint, and timestamp.
 - Standard library only — no third-party dependencies.
 
 ## Install
  
-As a pinned project tool (recommended, requires Go 1.25+):
+As a pinned project tool (recommended, requires Go 1.24+):
  
 ```sh
 go get -tool github.com/patjakubik/gqlschema@latest
@@ -37,8 +38,9 @@ go install github.com/patjakubik/gqlschema@latest
 gqlschema -endpoint <url> [flags]
  
   -endpoint string   GraphQL endpoint URL (required)
-  -out string        output path prefix; writes <out>.graphql (default "schema")
+  -out string        output path; .graphql is appended when the path has no extension (default "schema")
   -no-descriptions   omit schema descriptions from the output
+  -sort              sort types, fields, arguments, and enum values alphabetically for stable diffs
   -stamp             prepend a header comment with the generator, version, endpoint, and timestamp
   -method string     HTTP method for the introspection request (default "POST")
   -header value      HTTP header as 'Key: Value' (repeatable)
@@ -77,13 +79,13 @@ Keep your operation documents out of the schema's directory. genqlient's `operat
  
 ## Descriptions
  
-`gqlschema` writes a single `<out>.graphql`. By default it keeps all schema descriptions, which is useful for browsing or diffing what the API documents. Pass `-no-descriptions` to omit them: genqlient ignores descriptions, so this produces a smaller file to feed codegen.
+By default `gqlschema` keeps all schema descriptions — on types, fields, enum values, input fields, and field arguments (argument lists with described arguments print one argument per line, the way graphql-js does) — which is useful for browsing or diffing what the API documents. Pass `-no-descriptions` to omit them: genqlient ignores descriptions, so this produces a smaller file to feed codegen.
  
 Descriptions are toggled structurally during printing, so the description-stripped output is not produced by removing text after the fact — there is no risk of a stray `"""` inside a default value or description corrupting the result.
  
 ## Notes and caveats
  
-- **API version compatibility.** The introspection query requests `specifiedByURL`, `isRepeatable`, and input-value `isDeprecated`. Recent GraphQL servers (including current Shopify API versions) support these, but a much older endpoint may reject them and fail introspection. If that happens, remove those fields from the query.
+- **API version compatibility.** The introspection query requests `specifiedByURL`, `isRepeatable`, `isOneOf`, and input-value `isDeprecated`. Recent GraphQL servers (including current Shopify API versions) support these, but a much older endpoint may reject them and fail introspection. If that happens, remove those fields from the query.
 - **Directive applications are not recoverable.** Introspection exposes directive *definitions* but not directives *applied* to fields, so the generated SDL will not be byte-identical to a hand-maintained schema that uses custom directives. This is a limitation of GraphQL introspection itself, not of this tool, and it does not affect genqlient, which only needs types and fields.
 - **Introspection must be enabled.** Many APIs disable introspection in production. Point the tool at an environment where it is available.
 

@@ -1,8 +1,8 @@
 // Command gqlschema fetches a GraphQL schema from an endpoint via an
 // introspection query and writes it out as SDL, in a form genqlient can consume.
 //
-// It writes a single <out>.graphql. Schema descriptions are included by default
-// and omitted with -no-descriptions.
+// It writes a single file named by -out (default schema.graphql). Schema
+// descriptions are included by default and omitted with -no-descriptions.
 package main
 
 import (
@@ -15,13 +15,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 )
 
 // introspectionQuery is the standard full introspection query, including
-// deprecated fields, directives, isRepeatable, specifiedByURL, and input-value
-// deprecation.
+// deprecated fields, directives, isRepeatable, specifiedByURL, isOneOf, and
+// input-value deprecation.
 const introspectionQuery = `query IntrospectionQuery {
   __schema {
     queryType { name }
@@ -42,6 +43,7 @@ fragment FullType on __Type {
   name
   description
   specifiedByURL
+  isOneOf
   fields(includeDeprecated: true) {
     name
     description
@@ -105,6 +107,7 @@ type fullType struct {
 	Name           string       `json:"name"`
 	Description    *string      `json:"description"`
 	SpecifiedByURL *string      `json:"specifiedByURL"`
+	IsOneOf        bool         `json:"isOneOf"`
 	Fields         []field      `json:"fields"`
 	InputFields    []inputValue `json:"inputFields"`
 	Interfaces     []typeRef    `json:"interfaces"`
@@ -164,9 +167,10 @@ func (h *headerFlag) Set(v string) error {
 func main() {
 	var (
 		endpoint = flag.String("endpoint", "", "GraphQL endpoint URL (required)")
-		out      = flag.String("out", "schema", "output path prefix; writes <out>.graphql")
+		out      = flag.String("out", "schema", "output path; .graphql is appended when the path has no extension")
 		method   = flag.String("method", "POST", "HTTP method for the introspection request")
 		noDesc   = flag.Bool("no-descriptions", false, "omit schema descriptions from the output")
+		sorted   = flag.Bool("sort", false, "sort types, fields, arguments, and enum values alphabetically for stable diffs")
 		stamp    = flag.Bool("stamp", false, "prepend a header comment with the generator, version, endpoint, and timestamp")
 		headers  headerFlag
 	)
@@ -184,13 +188,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	if *sorted {
+		sortSchema(sch)
+	}
 
 	banner := ""
 	if *stamp {
 		banner = headerComment(*endpoint, generatorVersion(), time.Now())
 	}
 
-	path := *out + ".graphql"
+	path := outputPath(*out)
 	if err := writeFile(path, banner+printSchema(sch, !*noDesc)); err != nil {
 		fmt.Fprintf(os.Stderr, "error writing schema: %v\n", err)
 		os.Exit(1)
@@ -218,6 +225,15 @@ func generatorVersion() string {
 		}
 	}
 	return "dev"
+}
+
+// outputPath appends .graphql to -out only when it names no extension, so an
+// explicit file name like schema.gql is written as given.
+func outputPath(out string) string {
+	if filepath.Ext(out) == "" {
+		return out + ".graphql"
+	}
+	return out
 }
 
 func writeFile(path, content string) error {
@@ -281,6 +297,36 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// sortSchema orders every named collection alphabetically, mirroring
+// graphql-js's lexicographicSortSchema, so the output stays stable when a
+// server returns definitions in a different order between runs.
+func sortSchema(s *schema) {
+	slices.SortFunc(s.Directives, func(a, b directive) int { return strings.Compare(a.Name, b.Name) })
+	for i := range s.Directives {
+		sortArgs(s.Directives[i].Args)
+	}
+	slices.SortFunc(s.Types, func(a, b fullType) int { return strings.Compare(a.Name, b.Name) })
+	for i := range s.Types {
+		t := &s.Types[i]
+		slices.SortFunc(t.Fields, func(a, b field) int { return strings.Compare(a.Name, b.Name) })
+		for j := range t.Fields {
+			sortArgs(t.Fields[j].Args)
+		}
+		sortArgs(t.InputFields)
+		slices.SortFunc(t.EnumValues, func(a, b enumValue) int { return strings.Compare(a.Name, b.Name) })
+		sortRefs(t.Interfaces)
+		sortRefs(t.PossibleTypes)
+	}
+}
+
+func sortArgs(args []inputValue) {
+	slices.SortFunc(args, func(a, b inputValue) int { return strings.Compare(a.Name, b.Name) })
+}
+
+func sortRefs(refs []typeRef) {
+	slices.SortFunc(refs, func(a, b typeRef) int { return strings.Compare(deref(a.Name), deref(b.Name)) })
 }
 
 // --- SDL printer ---
@@ -363,7 +409,11 @@ func (p *printer) desc(d *string, indent string) {
 		return
 	}
 	clean := strings.ReplaceAll(*d, `"""`, `\"""`)
-	if !strings.Contains(clean, "\n") {
+	// A value ending in `"` or `\` would glue into the closing quotes of the
+	// single-line form (`"""x""""` does not parse), so those use the multi-line
+	// form too, matching graphql-js.
+	if !strings.Contains(clean, "\n") &&
+		!strings.HasSuffix(clean, `"`) && !strings.HasSuffix(clean, `\`) {
 		p.line(indent + `"""` + clean + `"""`)
 		return
 	}
@@ -418,6 +468,11 @@ func (p *printer) printType(t fullType) {
 		p.line("union " + t.Name + " = " + strings.Join(names, " | "))
 	case "ENUM":
 		p.desc(t.Description, "")
+		// `{}` with no members is invalid SDL, so an empty type prints bare.
+		if len(t.EnumValues) == 0 {
+			p.line("enum " + t.Name)
+			return
+		}
 		p.line("enum " + t.Name + " {")
 		for _, ev := range t.EnumValues {
 			p.desc(ev.Description, "  ")
@@ -426,7 +481,15 @@ func (p *printer) printType(t fullType) {
 		p.line("}")
 	case "INPUT_OBJECT":
 		p.desc(t.Description, "")
-		p.line("input " + t.Name + " {")
+		head := "input " + t.Name
+		if t.IsOneOf {
+			head += " @oneOf"
+		}
+		if len(t.InputFields) == 0 {
+			p.line(head)
+			return
+		}
+		p.line(head + " {")
 		for _, in := range t.InputFields {
 			p.desc(in.Description, "  ")
 			p.line("  " + inputValueSDL(in))
@@ -437,10 +500,7 @@ func (p *printer) printType(t fullType) {
 
 func (p *printer) printField(f field) {
 	p.desc(f.Description, "  ")
-	line := "  " + f.Name
-	if len(f.Args) > 0 {
-		line += "(" + argList(f.Args) + ")"
-	}
+	line := p.argsSDL("  "+f.Name, f.Args, "  ")
 	line += ": " + renderType(&f.Type)
 	line += deprecation(f.IsDeprecated, f.DeprecationReason)
 	p.line(line)
@@ -448,15 +508,41 @@ func (p *printer) printField(f field) {
 
 func (p *printer) printDirective(d directive) {
 	p.desc(d.Description, "")
-	line := "directive @" + d.Name
-	if len(d.Args) > 0 {
-		line += "(" + argList(d.Args) + ")"
-	}
+	line := p.argsSDL("directive @"+d.Name, d.Args, "")
 	if d.IsRepeatable {
 		line += " repeatable"
 	}
 	line += " on " + strings.Join(d.Locations, " | ")
 	p.line(line)
+}
+
+// argsSDL appends an argument list to head. Arguments normally render inline,
+// but when descriptions are on and any argument has one, they go one per line
+// so the descriptions have somewhere to live; the emitted lines end with the
+// closing paren returned as the new head for the caller to continue.
+func (p *printer) argsSDL(head string, args []inputValue, indent string) string {
+	if len(args) == 0 {
+		return head
+	}
+	described := false
+	for _, a := range args {
+		if p.withDescriptions && a.Description != nil && *a.Description != "" {
+			described = true
+			break
+		}
+	}
+	if !described {
+		return head + "(" + argList(args) + ")"
+	}
+	p.line(head + "(")
+	for i, a := range args {
+		if i > 0 && a.Description != nil && *a.Description != "" {
+			p.blank()
+		}
+		p.desc(a.Description, indent+"  ")
+		p.line(indent + "  " + inputValueSDL(a))
+	}
+	return indent + ")"
 }
 
 func argList(args []inputValue) string {
@@ -500,9 +586,17 @@ func deprecation(isDep bool, reason *string) string {
 // renderType walks the NON_NULL / LIST wrappers to produce e.g. [Foo!]!
 func renderType(t *typeRef) string {
 	switch t.Kind {
-	case "NON_NULL":
-		return renderType(t.OfType) + "!"
-	case "LIST":
+	case "NON_NULL", "LIST":
+		if t.OfType == nil {
+			// The introspection TypeRef fragment only recurses 9 levels, so a
+			// type wrapped deeper than that arrives truncated. No real schema
+			// does this; emit a reserved marker that downstream parsers reject
+			// loudly rather than panicking here.
+			return "__TRUNCATED__"
+		}
+		if t.Kind == "NON_NULL" {
+			return renderType(t.OfType) + "!"
+		}
 		return "[" + renderType(t.OfType) + "]"
 	default:
 		return deref(t.Name)
