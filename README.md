@@ -21,7 +21,7 @@ genqlient deliberately does not introspect remote endpoints; it expects an SDL s
 As a pinned project tool (recommended, requires Go 1.24+):
  
 ```sh
-go get -tool github.com/patjakubik/gqlschema@latest
+go get -tool github.com/patjakubik/gqlschema/cmd/gqlschema@latest
 ```
  
 This adds a `tool` directive to your `go.mod`, so everyone on the project and CI runs the same version. Invoke it with `go tool gqlschema`.
@@ -29,7 +29,7 @@ This adds a `tool` directive to your `go.mod`, so everyone on the project and CI
 Or as a global binary:
  
 ```sh
-go install github.com/patjakubik/gqlschema@latest
+go install github.com/patjakubik/gqlschema/cmd/gqlschema@latest
 ```
  
 ## Usage
@@ -55,7 +55,31 @@ gqlschema \
 ```
  
 Writes `schema.graphql` (pass `-no-descriptions` to omit descriptions from it).
- 
+
+## Use as a library
+
+The root package exposes the same fetch and print pipeline for Go programs
+that introspect endpoints directly — several endpoints in one process, a
+custom `http.Client`, or the decoded schema itself:
+
+```go
+import "github.com/patjakubik/gqlschema"
+
+sch, err := gqlschema.Fetch(ctx, "https://your-shop.myshopify.com/admin/api/unstable/graphql", &gqlschema.Options{
+	Headers: map[string]string{"X-Shopify-Access-Token": token},
+})
+if err != nil {
+	return err
+}
+sch.Sort() // optional: stable ordering, like graphql-js lexicographicSortSchema
+sdl := sch.SDL(nil) // or &gqlschema.SDLOptions{OmitDescriptions: true}
+```
+
+`Fetch` takes a `context.Context` and honours `Options.Client` (a client with
+a 60-second timeout is used when nil). The returned `Schema` is the decoded
+introspection result with exported fields, so it can also be inspected or
+transformed before printing.
+
 ## Wiring into genqlient
  
 Point genqlient's `schema:` at the generated file and chain both steps in `go generate`. genqlient ignores descriptions, so the default output works directly; pass `-no-descriptions` if you'd rather feed it a smaller description-free file:

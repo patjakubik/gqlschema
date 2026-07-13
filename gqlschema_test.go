@@ -1,17 +1,17 @@
-package main
+package gqlschema
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
-// decodeSample unmarshals the sample introspection response into a schema,
-// mirroring what fetchSchema does after the HTTP round-trip.
-func decodeSample(s *schema) error {
+// decodeSample unmarshals the sample introspection response into a Schema,
+// mirroring what Fetch does after the HTTP round-trip.
+func decodeSample(s *Schema) error {
 	var ir introspectionResponse
 	if err := json.Unmarshal([]byte(sample), &ir); err != nil {
 		return err
@@ -78,16 +78,18 @@ func TestFetchAndPrint(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sch, err := fetchSchema(srv.URL, "POST", []string{"X-Shopify-Access-Token: test-token"})
+	sch, err := Fetch(context.Background(), srv.URL, &Options{
+		Headers: map[string]string{"X-Shopify-Access-Token": "test-token"},
+	})
 	if err != nil {
-		t.Fatalf("fetchSchema: %v", err)
+		t.Fatalf("Fetch: %v", err)
 	}
 	if gotAuth != "test-token" {
 		t.Errorf("header not sent, got %q", gotAuth)
 	}
 
-	sdl := printSchema(sch, true)
-	noDesc := printSchema(sch, false)
+	sdl := sch.SDL(nil)
+	noDesc := sch.SDL(&SDLOptions{OmitDescriptions: true})
 
 	wantIn := []string{
 		"schema {\n  query: QueryRoot\n  mutation: Mutation\n}",
@@ -117,12 +119,12 @@ func TestFetchAndPrint(t *testing.T) {
 		}
 	}
 
-	// The -no-descriptions output drops descriptions but keeps structure.
+	// The OmitDescriptions output drops descriptions but keeps structure.
 	if strings.Contains(noDesc, `"""`) {
-		t.Errorf("no-descriptions SDL still has descriptions:\n%s", noDesc)
+		t.Errorf("OmitDescriptions SDL still has descriptions:\n%s", noDesc)
 	}
 	if !strings.Contains(noDesc, "type Product implements Node {") {
-		t.Errorf("no-descriptions SDL lost structure:\n%s", noDesc)
+		t.Errorf("OmitDescriptions SDL lost structure:\n%s", noDesc)
 	}
 }
 
@@ -174,7 +176,7 @@ input ProductInput {
 scalar DateTime
 `
 
-// wantSchemaNoDesc is the same fixture printed with -no-descriptions.
+// wantSchemaNoDesc is the same fixture printed with OmitDescriptions.
 const wantSchemaNoDesc = `schema {
   query: QueryRoot
   mutation: Mutation
@@ -213,22 +215,22 @@ scalar DateTime
 `
 
 func TestGolden(t *testing.T) {
-	var s schema
+	var s Schema
 	if err := decodeSample(&s); err != nil {
 		t.Fatalf("decode sample: %v", err)
 	}
 
 	cases := []struct {
-		name             string
-		withDescriptions bool
-		want             string
+		name string
+		opts *SDLOptions
+		want string
 	}{
-		{"with descriptions", true, wantSchema},
-		{"no descriptions", false, wantSchemaNoDesc},
+		{"with descriptions", nil, wantSchema},
+		{"no descriptions", &SDLOptions{OmitDescriptions: true}, wantSchemaNoDesc},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := printSchema(&s, c.withDescriptions); got != c.want {
+			if got := s.SDL(c.opts); got != c.want {
 				t.Errorf("printer output mismatch\n--- got ---\n%s\n--- want ---\n%s", got, c.want)
 			}
 		})
@@ -266,13 +268,13 @@ func TestDeprecationEscaping(t *testing.T) {
 
 func TestRenderType(t *testing.T) {
 	// [Foo!]! -> NON_NULL(LIST(NON_NULL(Foo)))
-	nn := func(of typeRef) typeRef { return typeRef{Kind: "NON_NULL", OfType: &of} }
-	list := func(of typeRef) typeRef { return typeRef{Kind: "LIST", OfType: &of} }
-	named := func(n string) typeRef { return typeRef{Kind: "SCALAR", Name: ptr(n)} }
+	nn := func(of TypeRef) TypeRef { return TypeRef{Kind: "NON_NULL", OfType: &of} }
+	list := func(of TypeRef) TypeRef { return TypeRef{Kind: "LIST", OfType: &of} }
+	named := func(n string) TypeRef { return TypeRef{Kind: "SCALAR", Name: ptr(n)} }
 
 	cases := []struct {
 		name string
-		t    typeRef
+		t    TypeRef
 		want string
 	}{
 		{"named", named("Foo"), "Foo"},
@@ -293,27 +295,27 @@ func TestRenderType(t *testing.T) {
 func TestSchemaBlock(t *testing.T) {
 	cases := []struct {
 		name string
-		s    schema
+		s    Schema
 		want string
 	}{
 		{
 			"default roots -> no block",
-			schema{QueryType: &typeName{"Query"}, MutationType: &typeName{"Mutation"}, SubscriptionType: &typeName{"Subscription"}},
+			Schema{QueryType: &RootType{"Query"}, MutationType: &RootType{"Mutation"}, SubscriptionType: &RootType{"Subscription"}},
 			"",
 		},
 		{
 			"query only, default -> no block",
-			schema{QueryType: &typeName{"Query"}},
+			Schema{QueryType: &RootType{"Query"}},
 			"",
 		},
 		{
 			"non-default query root -> block",
-			schema{QueryType: &typeName{"QueryRoot"}, MutationType: &typeName{"Mutation"}},
+			Schema{QueryType: &RootType{"QueryRoot"}, MutationType: &RootType{"Mutation"}},
 			"schema {\n  query: QueryRoot\n  mutation: Mutation\n}",
 		},
 		{
 			"non-default mutation root -> block",
-			schema{QueryType: &typeName{"Query"}, MutationType: &typeName{"MutationRoot"}},
+			Schema{QueryType: &RootType{"Query"}, MutationType: &RootType{"MutationRoot"}},
 			"schema {\n  query: Query\n  mutation: MutationRoot\n}",
 		},
 	}
@@ -352,13 +354,13 @@ func TestDescriptionRendering(t *testing.T) {
 
 // specifiedByURL on a custom scalar becomes @specifiedBy(url:).
 func TestSpecifiedByScalar(t *testing.T) {
-	s := &schema{
-		QueryType: &typeName{"Query"},
-		Types: []fullType{
+	s := &Schema{
+		QueryType: &RootType{"Query"},
+		Types: []Type{
 			{Kind: "SCALAR", Name: "DateTime", SpecifiedByURL: ptr("https://example.com/datetime")},
 		},
 	}
-	sdl := printSchema(s, true)
+	sdl := s.SDL(nil)
 	want := `scalar DateTime @specifiedBy(url: "https://example.com/datetime")`
 	if !strings.Contains(sdl, want) {
 		t.Errorf("missing %q in:\n%s", want, sdl)
@@ -367,9 +369,9 @@ func TestSpecifiedByScalar(t *testing.T) {
 
 // All five spec built-in directives are filtered out; custom ones survive.
 func TestBuiltinDirectivesFiltered(t *testing.T) {
-	s := &schema{
-		QueryType: &typeName{"Query"},
-		Directives: []directive{
+	s := &Schema{
+		QueryType: &RootType{"Query"},
+		Directives: []Directive{
 			{Name: "skip", Locations: []string{"FIELD"}},
 			{Name: "include", Locations: []string{"FIELD"}},
 			{Name: "deprecated", Locations: []string{"FIELD_DEFINITION"}},
@@ -378,7 +380,7 @@ func TestBuiltinDirectivesFiltered(t *testing.T) {
 			{Name: "custom", Locations: []string{"FIELD"}},
 		},
 	}
-	sdl := printSchema(s, true)
+	sdl := s.SDL(nil)
 	for _, name := range []string{"@skip", "@include", "@deprecated", "@specifiedBy", "@oneOf"} {
 		if strings.Contains(sdl, "directive "+name) {
 			t.Errorf("built-in directive %s should be filtered, got:\n%s", name, sdl)
@@ -391,45 +393,12 @@ func TestBuiltinDirectivesFiltered(t *testing.T) {
 
 // A repeatable directive prints the `repeatable` keyword.
 func TestRepeatableDirective(t *testing.T) {
-	s := &schema{
-		QueryType:  &typeName{"Query"},
-		Directives: []directive{{Name: "tag", IsRepeatable: true, Locations: []string{"FIELD", "OBJECT"}}},
+	s := &Schema{
+		QueryType:  &RootType{"Query"},
+		Directives: []Directive{{Name: "tag", IsRepeatable: true, Locations: []string{"FIELD", "OBJECT"}}},
 	}
-	sdl := printSchema(s, true)
-	if !strings.Contains(sdl, "directive @tag repeatable on FIELD | OBJECT") {
+	if sdl := s.SDL(nil); !strings.Contains(sdl, "directive @tag repeatable on FIELD | OBJECT") {
 		t.Errorf("repeatable keyword missing:\n%s", sdl)
-	}
-}
-
-func TestHeaderComment(t *testing.T) {
-	at := time.Date(2026, 7, 6, 15, 4, 5, 0, time.UTC)
-	got := headerComment("https://shop.example.com/graphql", "v1.4.0", at)
-
-	for _, want := range []string{
-		"# Code generated by gqlschema v1.4.0",
-		"DO NOT EDIT.",
-		"# Endpoint:  https://shop.example.com/graphql",
-		"# Generated: 2026-07-06T15:04:05Z",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("header comment missing %q, got:\n%s", want, got)
-		}
-	}
-	// Every non-empty line is a comment, and it ends with a blank separator so the
-	// SDL that follows is not glued to the last comment line.
-	if !strings.HasSuffix(got, "\n\n") {
-		t.Errorf("header comment should end with a blank line, got:\n%q", got)
-	}
-	for _, ln := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
-		if ln != "" && !strings.HasPrefix(ln, "#") {
-			t.Errorf("non-comment line in header: %q", ln)
-		}
-	}
-
-	// A non-UTC time is normalised to UTC.
-	loc := time.FixedZone("PST", -8*3600)
-	if utc := headerComment("x", "dev", at.In(loc)); !strings.Contains(utc, "2026-07-06T15:04:05Z") {
-		t.Errorf("timestamp not normalised to UTC:\n%s", utc)
 	}
 }
 
@@ -441,7 +410,7 @@ func TestFetchGraphQLErrorsInBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := fetchSchema(srv.URL, "POST", nil)
+	_, err := Fetch(context.Background(), srv.URL, nil)
 	if err == nil || !strings.Contains(err.Error(), "Access denied") {
 		t.Errorf("expected GraphQL error surfaced, got %v", err)
 	}
@@ -454,16 +423,9 @@ func TestFetchNon200(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := fetchSchema(srv.URL, "POST", nil)
+	_, err := Fetch(context.Background(), srv.URL, nil)
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Errorf("expected 401 error, got %v", err)
-	}
-}
-
-func TestFetchBadHeader(t *testing.T) {
-	_, err := fetchSchema("http://example.invalid", "POST", []string{"NoColonHere"})
-	if err == nil || !strings.Contains(err.Error(), "bad -header") {
-		t.Errorf("expected bad -header error, got %v", err)
 	}
 }
 
@@ -476,10 +438,49 @@ func TestFetchMultipleHeaders(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := fetchSchema(srv.URL, "POST", []string{"X-A: one", "X-B: two"}); err != nil {
-		t.Fatalf("fetchSchema: %v", err)
+	opts := &Options{Headers: map[string]string{"X-A": "one", "X-B": "two"}}
+	if _, err := Fetch(context.Background(), srv.URL, opts); err != nil {
+		t.Fatalf("Fetch: %v", err)
 	}
 	if gotA != "one" || gotB != "two" {
 		t.Errorf("headers not both sent: X-A=%q X-B=%q", gotA, gotB)
 	}
 }
+
+// Fetch honours the caller's context.
+func TestFetchContextCanceled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(sample))
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Fetch(ctx, srv.URL, nil); err == nil {
+		t.Error("expected error from canceled context")
+	}
+}
+
+// Fetch uses the caller's client when one is provided.
+func TestFetchCustomClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(sample))
+	}))
+	defer srv.Close()
+
+	used := false
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		used = true
+		return http.DefaultTransport.RoundTrip(r)
+	})}
+	if _, err := Fetch(context.Background(), srv.URL, &Options{Client: client}); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if !used {
+		t.Error("custom client not used")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

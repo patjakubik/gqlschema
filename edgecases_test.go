@@ -1,4 +1,4 @@
-package main
+package gqlschema
 
 import (
 	"encoding/json"
@@ -32,11 +32,11 @@ func TestDescriptionTrailingQuote(t *testing.T) {
 // `{}` with no members is invalid SDL; empty enums and input objects print
 // bare, matching the existing object/interface behaviour.
 func TestEmptyEnumAndInput(t *testing.T) {
-	s := &schema{QueryType: &typeName{"Query"}, Types: []fullType{
+	s := &Schema{QueryType: &RootType{"Query"}, Types: []Type{
 		{Kind: "ENUM", Name: "EmptyEnum"},
 		{Kind: "INPUT_OBJECT", Name: "EmptyInput"},
 	}}
-	sdl := printSchema(s, true)
+	sdl := s.SDL(nil)
 	for _, want := range []string{"enum EmptyEnum\n", "input EmptyInput\n"} {
 		if !strings.Contains(sdl, want) {
 			t.Errorf("missing %q in:\n%s", want, sdl)
@@ -50,7 +50,7 @@ func TestEmptyEnumAndInput(t *testing.T) {
 // A oneOf input object keeps its @oneOf directive, and isOneOf decodes from
 // the introspection JSON.
 func TestOneOfInput(t *testing.T) {
-	var ft fullType
+	var ft Type
 	if err := json.Unmarshal([]byte(`{"kind":"INPUT_OBJECT","name":"MoneyInput","isOneOf":true,
 		"inputFields":[{"name":"amount","type":{"kind":"SCALAR","name":"Int"},"defaultValue":null}]}`), &ft); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -58,8 +58,8 @@ func TestOneOfInput(t *testing.T) {
 	if !ft.IsOneOf {
 		t.Fatal("isOneOf not decoded")
 	}
-	s := &schema{QueryType: &typeName{"Query"}, Types: []fullType{ft}}
-	if sdl := printSchema(s, true); !strings.Contains(sdl, "input MoneyInput @oneOf {") {
+	s := &Schema{QueryType: &RootType{"Query"}, Types: []Type{ft}}
+	if sdl := s.SDL(nil); !strings.Contains(sdl, "input MoneyInput @oneOf {") {
 		t.Errorf("@oneOf missing:\n%s", sdl)
 	}
 }
@@ -67,14 +67,14 @@ func TestOneOfInput(t *testing.T) {
 // When any argument has a description, the argument list goes one per line so
 // the descriptions survive; undescribed argument lists stay inline.
 func TestArgDescriptions(t *testing.T) {
-	id := typeRef{Kind: "SCALAR", Name: ptr("ID")}
-	s := &schema{QueryType: &typeName{"QueryRoot"}, Types: []fullType{
-		{Kind: "OBJECT", Name: "QueryRoot", Fields: []field{
-			{Name: "product", Args: []inputValue{
+	id := TypeRef{Kind: "SCALAR", Name: ptr("ID")}
+	s := &Schema{QueryType: &RootType{"QueryRoot"}, Types: []Type{
+		{Kind: "OBJECT", Name: "QueryRoot", Fields: []Field{
+			{Name: "product", Args: []InputValue{
 				{Name: "id", Description: ptr("The product id."), Type: id},
 				{Name: "handle", Type: id},
 			}, Type: id},
-			{Name: "shop", Args: []inputValue{{Name: "id", Type: id}}, Type: id},
+			{Name: "shop", Args: []InputValue{{Name: "id", Type: id}}, Type: id},
 		}},
 	}}
 
@@ -83,7 +83,7 @@ func TestArgDescriptions(t *testing.T) {
     id: ID
     handle: ID
   ): ID`
-	sdl := printSchema(s, true)
+	sdl := s.SDL(nil)
 	if !strings.Contains(sdl, want) {
 		t.Errorf("multi-line args missing, want:\n%s\ngot:\n%s", want, sdl)
 	}
@@ -92,24 +92,24 @@ func TestArgDescriptions(t *testing.T) {
 	}
 
 	// With descriptions disabled everything stays inline.
-	noDesc := printSchema(s, false)
+	noDesc := s.SDL(&SDLOptions{OmitDescriptions: true})
 	if !strings.Contains(noDesc, "  product(id: ID, handle: ID): ID") {
-		t.Errorf("-no-descriptions args should be inline:\n%s", noDesc)
+		t.Errorf("OmitDescriptions args should be inline:\n%s", noDesc)
 	}
 }
 
 // Directive arguments get the same multi-line treatment.
 func TestDirectiveArgDescriptions(t *testing.T) {
-	s := &schema{QueryType: &typeName{"Query"}, Directives: []directive{
-		{Name: "tag", Locations: []string{"FIELD"}, Args: []inputValue{
-			{Name: "name", Description: ptr("Tag name."), Type: typeRef{Kind: "SCALAR", Name: ptr("String")}},
+	s := &Schema{QueryType: &RootType{"Query"}, Directives: []Directive{
+		{Name: "tag", Locations: []string{"FIELD"}, Args: []InputValue{
+			{Name: "name", Description: ptr("Tag name."), Type: TypeRef{Kind: "SCALAR", Name: ptr("String")}},
 		}},
 	}}
 	want := `directive @tag(
   """Tag name."""
   name: String
 ) on FIELD`
-	if sdl := printSchema(s, true); !strings.Contains(sdl, want) {
+	if sdl := s.SDL(nil); !strings.Contains(sdl, want) {
 		t.Errorf("want:\n%s\ngot:\n%s", want, sdl)
 	}
 }
@@ -118,36 +118,21 @@ func TestDirectiveArgDescriptions(t *testing.T) {
 // a reserved marker instead of panicking on the nil ofType.
 func TestRenderTypeTruncated(t *testing.T) {
 	for _, kind := range []string{"NON_NULL", "LIST"} {
-		got := renderType(&typeRef{Kind: kind})
+		got := renderType(&TypeRef{Kind: kind})
 		if !strings.Contains(got, "__TRUNCATED__") {
 			t.Errorf("renderType(%s, nil ofType) = %q, want __TRUNCATED__ marker", kind, got)
 		}
 	}
 }
 
-// -out appends .graphql only when the path has no extension.
-func TestOutputPath(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"schema", "schema.graphql"},
-		{"out/admin/unstable", "out/admin/unstable.graphql"},
-		{"schema.gql", "schema.gql"},
-		{"schema.graphql", "schema.graphql"},
-	}
-	for _, c := range cases {
-		if got := outputPath(c.in); got != c.want {
-			t.Errorf("outputPath(%q) = %q, want %q", c.in, got, c.want)
-		}
-	}
-}
-
-// sortSchema orders every named collection alphabetically, like graphql-js's
+// Sort orders every named collection alphabetically, like graphql-js's
 // lexicographicSortSchema. Pinned as a golden over the shared sample fixture.
 func TestSortSchema(t *testing.T) {
-	var s schema
+	var s Schema
 	if err := decodeSample(&s); err != nil {
 		t.Fatalf("decode sample: %v", err)
 	}
-	sortSchema(&s)
+	s.Sort()
 
 	want := `schema {
   query: QueryRoot
@@ -185,26 +170,26 @@ type QueryRoot {
 
 union SearchResult = Product | QueryRoot
 `
-	if got := printSchema(&s, false); got != want {
+	if got := s.SDL(&SDLOptions{OmitDescriptions: true}); got != want {
 		t.Errorf("sorted output mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
 
 // Sorting also orders arguments, union members, and interface lists.
 func TestSortSchemaInner(t *testing.T) {
-	str := typeRef{Kind: "SCALAR", Name: ptr("String")}
-	s := schema{QueryType: &typeName{"Query"}, Types: []fullType{
+	str := TypeRef{Kind: "SCALAR", Name: ptr("String")}
+	s := Schema{QueryType: &RootType{"Query"}, Types: []Type{
 		{Kind: "OBJECT", Name: "Query",
-			Interfaces: []typeRef{{Kind: "INTERFACE", Name: ptr("B")}, {Kind: "INTERFACE", Name: ptr("A")}},
-			Fields: []field{{Name: "f", Args: []inputValue{
+			Interfaces: []TypeRef{{Kind: "INTERFACE", Name: ptr("B")}, {Kind: "INTERFACE", Name: ptr("A")}},
+			Fields: []Field{{Name: "f", Args: []InputValue{
 				{Name: "zeta", Type: str}, {Name: "alpha", Type: str},
 			}, Type: str}}},
-		{Kind: "UNION", Name: "U", PossibleTypes: []typeRef{
+		{Kind: "UNION", Name: "U", PossibleTypes: []TypeRef{
 			{Kind: "OBJECT", Name: ptr("Z")}, {Kind: "OBJECT", Name: ptr("A")},
 		}},
 	}}
-	sortSchema(&s)
-	sdl := printSchema(&s, false)
+	s.Sort()
+	sdl := s.SDL(&SDLOptions{OmitDescriptions: true})
 	for _, want := range []string{
 		"type Query implements A & B {",
 		"f(alpha: String, zeta: String): String",
