@@ -3,6 +3,7 @@ package gqlschema
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // A trimmed real Shopify `query`-argument description: table glued to the
@@ -14,24 +15,86 @@ const brokenTable = "A filter made up of terms, connectives, modifiers, and comp
 	"| status | string |\n" +
 	"You can apply one or more filters to a query."
 
-const fixedTable = "A filter made up of terms, connectives, modifiers, and comparators.\n" +
-	"\n" +
-	"| name | type | description | acceptable_values | default_value | example_use |\n" +
-	"| ---- | ---- | ---- | ---- | ---- | ---- |\n" +
-	"| default | string | Filter by a case-insensitive search. | | | - `query=Bob Norman` |\n" +
-	"| status | string | | | | |\n" +
-	"\n" +
-	"You can apply one or more filters to a query."
-
 func TestFixMarkdownTables(t *testing.T) {
 	got := fixMarkdownTables(brokenTable)
-	if got != fixedTable {
-		t.Errorf("fixMarkdownTables mismatch\n--- got ---\n%s\n--- want ---\n%s", got, fixedTable)
+	lines := strings.Split(got, "\n")
+
+	// Blank lines separate the table from the surrounding paragraphs.
+	if lines[1] != "" {
+		t.Errorf("missing blank line before table:\n%s", got)
+	}
+	if lines[len(lines)-2] != "" {
+		t.Errorf("missing blank line after table:\n%s", got)
+	}
+
+	// All four table lines are aligned: same width, pipes in the same columns.
+	table := lines[2:6]
+	pipeCols := func(s string) []int {
+		var cols []int
+		for i, r := range []rune(s) {
+			if r == '|' {
+				cols = append(cols, i)
+			}
+		}
+		return cols
+	}
+	want := pipeCols(table[0])
+	if len(want) != 7 { // 6 columns
+		t.Fatalf("header should have 7 pipes, got %d: %q", len(want), table[0])
+	}
+	for _, ln := range table[1:] {
+		if utf8.RuneCountInString(ln) != utf8.RuneCountInString(table[0]) {
+			t.Errorf("row width differs from header:\n%q\n%q", table[0], ln)
+		}
+		got := pipeCols(ln)
+		if len(got) != len(want) {
+			t.Errorf("row has %d pipes, header %d: %q", len(got), len(want), ln)
+			continue
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Errorf("pipe %d at col %d, header at %d: %q", i, got[i], want[i], ln)
+				break
+			}
+		}
+	}
+
+	// Cell content is preserved.
+	for _, cell := range []string{"Filter by a case-insensitive search.", "- `query=Bob Norman`", "acceptable_values"} {
+		if !strings.Contains(got, cell) {
+			t.Errorf("cell content lost: %q", cell)
+		}
 	}
 
 	// Idempotent: fixing fixed text changes nothing.
 	if again := fixMarkdownTables(got); again != got {
 		t.Errorf("not idempotent\n--- first ---\n%s\n--- second ---\n%s", got, again)
+	}
+}
+
+// A small exact golden: blank lines inserted, short row padded, columns
+// aligned, separator rebuilt at the aligned width.
+func TestFixMarkdownTablesGolden(t *testing.T) {
+	in := "x\n| a | bb |\n| - | - |\n| 1 |"
+	want := "x\n" +
+		"\n" +
+		"| a   | bb  |\n" +
+		"| --- | --- |\n" +
+		"| 1   |     |"
+	if got := fixMarkdownTables(in); got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+	if again := fixMarkdownTables(want); again != want {
+		t.Errorf("not idempotent:\n%s", again)
+	}
+}
+
+// GFM alignment colons in the separator survive realignment.
+func TestFixMarkdownTablesAlignmentColons(t *testing.T) {
+	in := "| aaa | bbb | ccc |\n| :-- | --: | :-: |\n| 1 | 2 | 3 |"
+	want := "| aaa | bbb | ccc |\n| :-- | --: | :-: |\n| 1   | 2   | 3   |"
+	if got := fixMarkdownTables(in); got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
 }
 
@@ -50,23 +113,11 @@ func TestFixMarkdownTablesPassthrough(t *testing.T) {
 	}
 }
 
-// Tables at the very start or end of a description gain no stray blank lines.
-func TestFixMarkdownTablesAtEdges(t *testing.T) {
-	in := "| a | b |\n| - | - |\n| 1 | 2 |"
-	if got := fixMarkdownTables(in); got != in {
-		t.Errorf("edge table changed:\n%s", got)
-	}
-
-	blankAround := "text\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\ntext"
-	if got := fixMarkdownTables(blankAround); got != blankAround {
-		t.Errorf("already-fixed table changed:\n%s", got)
-	}
-}
-
 // FixMarkdownTables reaches descriptions in every position: types, fields,
 // field args, input fields, enum values, directives, and directive args.
 func TestFixMarkdownTablesWalks(t *testing.T) {
 	broken := "intro\n| a | b |\n| - | - |\n| 1 |"
+	fixed := "intro\n\n| a   | b   |\n| --- | --- |\n| 1   |     |"
 	str := TypeRef{Kind: "SCALAR", Name: ptr("String")}
 	s := &Schema{
 		QueryType: &RootType{"Query"},
@@ -98,13 +149,9 @@ func TestFixMarkdownTablesWalks(t *testing.T) {
 		s.Types[1].InputFields[0].Description,
 		s.Types[2].EnumValues[0].Description,
 	}
-	want := "intro\n\n| a | b |\n| - | - |\n| 1 | |"
 	for i, d := range descs {
-		if *d != want {
-			t.Errorf("description %d not fixed:\n%s", i, *d)
+		if *d != fixed {
+			t.Errorf("description %d not fixed:\ngot:\n%s\nwant:\n%s", i, *d, fixed)
 		}
-	}
-	if strings.Contains(*descs[0], "| 1 |\n") {
-		t.Error("short row not padded")
 	}
 }
