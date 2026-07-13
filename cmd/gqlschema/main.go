@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -35,6 +36,7 @@ func main() {
 		noDesc   = flag.Bool("no-descriptions", false, "omit schema descriptions from the output")
 		sorted   = flag.Bool("sort", false, "sort types, fields, arguments, and enum values alphabetically for stable diffs")
 		fixTbl   = flag.Bool("fix-tables", false, "normalize markdown tables in descriptions so they render (blank lines around tables, short rows padded)")
+		exts     = flag.Bool("extensions", false, "also fetch the server's non-spec introspection fields (e.g. Shopify's requiredAccess) into <out>.extensions.json")
 		stamp    = flag.Bool("stamp", false, "prepend a header comment with the generator, version, endpoint, and timestamp")
 		headers  headerFlag
 	)
@@ -80,6 +82,34 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("wrote %s\n", path)
+
+	if *exts {
+		ext, err := gqlschema.FetchExtensions(context.Background(), *endpoint, &gqlschema.Options{
+			Method:  *method,
+			Headers: headerMap,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		blob, err := json.MarshalIndent(ext, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error encoding extensions: %v\n", err)
+			os.Exit(1)
+		}
+		extPath := extensionsPath(path)
+		if err := writeFile(extPath, string(blob)+"\n"); err != nil {
+			fmt.Fprintf(os.Stderr, "error writing extensions: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("wrote %s (%d annotated coordinates)\n", extPath, len(ext))
+	}
+}
+
+// extensionsPath derives the sidecar name from the SDL path:
+// schema.graphql -> schema.extensions.json.
+func extensionsPath(sdlPath string) string {
+	return strings.TrimSuffix(sdlPath, filepath.Ext(sdlPath)) + ".extensions.json"
 }
 
 // parseHeaders turns repeated 'Key: Value' flags into a header map.

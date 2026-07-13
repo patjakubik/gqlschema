@@ -179,6 +179,29 @@ var defaultClient = &http.Client{Timeout: 60 * time.Second}
 // Fetch runs the introspection query against endpoint and decodes the schema.
 // GraphQL errors returned in a 200 body are surfaced as errors.
 func Fetch(ctx context.Context, endpoint string, opts *Options) (*Schema, error) {
+	raw, err := post(ctx, endpoint, opts, introspectionQuery)
+	if err != nil {
+		return nil, err
+	}
+
+	var ir introspectionResponse
+	if err := json.Unmarshal(raw, &ir); err != nil {
+		return nil, fmt.Errorf("decoding introspection response: %w", err)
+	}
+	// GraphQL servers (Shopify included) return errors in a 200 body, so check
+	// this before assuming data is present.
+	if len(ir.Errors) > 0 {
+		return nil, fmt.Errorf("introspection returned errors: %s", ir.Errors[0].Message)
+	}
+	if ir.Data.Schema.QueryType == nil {
+		return nil, fmt.Errorf("no __schema in response (is introspection enabled?)")
+	}
+	return &ir.Data.Schema, nil
+}
+
+// post sends a GraphQL query per opts and returns the raw response body of a
+// 200 response.
+func post(ctx context.Context, endpoint string, opts *Options, query string) ([]byte, error) {
 	if opts == nil {
 		opts = &Options{}
 	}
@@ -187,7 +210,7 @@ func Fetch(ctx context.Context, endpoint string, opts *Options) (*Schema, error)
 		method = http.MethodPost
 	}
 
-	body, _ := json.Marshal(map[string]string{"query": introspectionQuery})
+	body, _ := json.Marshal(map[string]string{"query": query})
 	req, err := http.NewRequestWithContext(ctx, strings.ToUpper(method), endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -215,20 +238,7 @@ func Fetch(ctx context.Context, endpoint string, opts *Options) (*Schema, error)
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("endpoint returned %d: %s", resp.StatusCode, truncate(string(raw), 300))
 	}
-
-	var ir introspectionResponse
-	if err := json.Unmarshal(raw, &ir); err != nil {
-		return nil, fmt.Errorf("decoding introspection response: %w", err)
-	}
-	// GraphQL servers (Shopify included) return errors in a 200 body, so check
-	// this before assuming data is present.
-	if len(ir.Errors) > 0 {
-		return nil, fmt.Errorf("introspection returned errors: %s", ir.Errors[0].Message)
-	}
-	if ir.Data.Schema.QueryType == nil {
-		return nil, fmt.Errorf("no __schema in response (is introspection enabled?)")
-	}
-	return &ir.Data.Schema, nil
+	return raw, nil
 }
 
 func truncate(s string, n int) string {
