@@ -13,6 +13,7 @@ genqlient deliberately does not introspect remote endpoints; it expects an SDL s
 - Surfaces GraphQL errors returned in a `200` body instead of failing opaquely.
 - Repeatable `-header` flag for auth and any other request headers.
 - Optional `-sort` (mirroring graphql-js's `lexicographicSortSchema`) so output stays stable when a server returns definitions in a different order between runs — useful when committing the schema to track changes over time.
+- Optional `-fix-tables` to normalize GitHub-flavored-Markdown tables inside descriptions: GFM tables cannot interrupt a paragraph, and Shopify's generated `query`-argument docs ship without the required blank lines and with truncated rows. The fix is whitespace and empty-cell padding only — cell content is never changed.
 - Optional `-stamp` header comment recording the generator, version, endpoint, and timestamp.
 - Standard library only — no third-party dependencies.
 
@@ -41,6 +42,7 @@ gqlschema -endpoint <url> [flags]
   -out string        output path; .graphql is appended when the path has no extension (default "schema")
   -no-descriptions   omit schema descriptions from the output
   -sort              sort types, fields, arguments, and enum values alphabetically for stable diffs
+  -fix-tables        normalize markdown tables in descriptions so they render (blank lines around tables, short rows padded)
   -stamp             prepend a header comment with the generator, version, endpoint, and timestamp
   -method string     HTTP method for the introspection request (default "POST")
   -header value      HTTP header as 'Key: Value' (repeatable)
@@ -71,7 +73,8 @@ sch, err := gqlschema.Fetch(ctx, "https://your-shop.myshopify.com/admin/api/unst
 if err != nil {
 	return err
 }
-sch.Sort() // optional: stable ordering, like graphql-js lexicographicSortSchema
+sch.Sort()               // optional: stable ordering, like graphql-js lexicographicSortSchema
+sch.FixMarkdownTables()  // optional: make markdown tables in descriptions render
 sdl := sch.SDL(nil) // or &gqlschema.SDLOptions{OmitDescriptions: true}
 ```
 

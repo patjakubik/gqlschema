@@ -34,6 +34,7 @@ func main() {
 		method   = flag.String("method", "POST", "HTTP method for the introspection request")
 		noDesc   = flag.Bool("no-descriptions", false, "omit schema descriptions from the output")
 		sorted   = flag.Bool("sort", false, "sort types, fields, arguments, and enum values alphabetically for stable diffs")
+		fixTbl   = flag.Bool("fix-tables", false, "normalize markdown tables in descriptions so they render (blank lines around tables, short rows padded)")
 		stamp    = flag.Bool("stamp", false, "prepend a header comment with the generator, version, endpoint, and timestamp")
 		headers  headerFlag
 	)
@@ -62,6 +63,9 @@ func main() {
 	}
 	if *sorted {
 		sch.Sort()
+	}
+	if *fixTbl {
+		sch.FixMarkdownTables()
 	}
 
 	banner := ""
