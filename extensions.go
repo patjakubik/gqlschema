@@ -1,9 +1,11 @@
 package gqlschema
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -267,4 +269,83 @@ func rawList(m map[string]json.RawMessage, key string) []map[string]json.RawMess
 	var l []map[string]json.RawMessage
 	json.Unmarshal(m[key], &l)
 	return l
+}
+
+// Annotate appends each coordinate's extension fields to the description of
+// the corresponding schema element, so the metadata travels inside the SDL
+// (IDE hovers, GraphiQL, docs) instead of a sidecar. Fields are appended as
+// `- name: value` lines after the existing description; elements without a
+// description get only the extension lines. String values are written bare,
+// other values as compact JSON.
+func (s *Schema) Annotate(ext Extensions) {
+	if len(ext) == 0 {
+		return
+	}
+	for i := range s.Types {
+		t := &s.Types[i]
+		annotate(&t.Description, ext[t.Name])
+		for j := range t.Fields {
+			f := &t.Fields[j]
+			fc := t.Name + "." + f.Name
+			annotate(&f.Description, ext[fc])
+			for k := range f.Args {
+				annotate(&f.Args[k].Description, ext[fc+"("+f.Args[k].Name+":)"])
+			}
+		}
+		for j := range t.InputFields {
+			annotate(&t.InputFields[j].Description, ext[t.Name+"."+t.InputFields[j].Name])
+		}
+		for j := range t.EnumValues {
+			annotate(&t.EnumValues[j].Description, ext[t.Name+"."+t.EnumValues[j].Name])
+		}
+	}
+	for i := range s.Directives {
+		d := &s.Directives[i]
+		annotate(&d.Description, ext["@"+d.Name])
+		for j := range d.Args {
+			annotate(&d.Args[j].Description, ext["@"+d.Name+"("+d.Args[j].Name+":)"])
+		}
+	}
+}
+
+func annotate(desc **string, fields map[string]json.RawMessage) {
+	if len(fields) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+
+	var b strings.Builder
+	if *desc != nil && **desc != "" {
+		b.WriteString(**desc)
+		b.WriteString("\n\n")
+	}
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("- ")
+		b.WriteString(k)
+		b.WriteString(": ")
+		b.WriteString(extValue(fields[k]))
+	}
+	out := b.String()
+	*desc = &out
+}
+
+// extValue renders a raw extension value for a description: strings bare,
+// everything else as its compact JSON.
+func extValue(v json.RawMessage) string {
+	var s string
+	if json.Unmarshal(v, &s) == nil {
+		return s
+	}
+	var buf bytes.Buffer
+	if json.Compact(&buf, v) == nil {
+		return buf.String()
+	}
+	return string(v)
 }

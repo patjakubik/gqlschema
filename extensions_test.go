@@ -184,3 +184,36 @@ func TestFetchExtensionsDeniedField(t *testing.T) {
 		t.Errorf("surviving field not fetched: %v", ext)
 	}
 }
+
+// Annotate merges extension values into descriptions at every coordinate kind,
+// appending to existing descriptions and creating them where absent.
+func TestAnnotate(t *testing.T) {
+	str := TypeRef{Kind: "SCALAR", Name: ptr("String")}
+	s := &Schema{
+		QueryType: &RootType{"Query"},
+		Types: []Type{{Kind: "OBJECT", Name: "Customer", Description: ptr("A customer."),
+			Fields: []Field{{Name: "orders", Type: str,
+				Args: []InputValue{{Name: "id", Type: str}}}}}},
+	}
+	s.Annotate(Extensions{
+		"Customer":             {"requiredAccess": json.RawMessage(`"read_customers scope"`), "isProtected": json.RawMessage(`true`)},
+		"Customer.orders":      {"requiredAccess": json.RawMessage(`"read_orders scope"`)},
+		"Customer.orders(id:)": {"gidTypes": json.RawMessage(`["Order"]`)},
+	})
+
+	if got, want := *s.Types[0].Description, "A customer.\n\n- isProtected: true\n- requiredAccess: read_customers scope"; got != want {
+		t.Errorf("type description = %q, want %q", got, want)
+	}
+	if got, want := *s.Types[0].Fields[0].Description, "- requiredAccess: read_orders scope"; got != want {
+		t.Errorf("field description = %q, want %q", got, want)
+	}
+	if got, want := *s.Types[0].Fields[0].Args[0].Description, `- gidTypes: ["Order"]`; got != want {
+		t.Errorf("arg description = %q, want %q", got, want)
+	}
+
+	// The annotated schema prints as valid SDL with the metadata inline.
+	sdl := s.SDL(nil)
+	if !strings.Contains(sdl, "- requiredAccess: read_customers scope") {
+		t.Errorf("annotation missing from SDL:\n%s", sdl)
+	}
+}

@@ -36,7 +36,7 @@ func main() {
 		noDesc   = flag.Bool("no-descriptions", false, "omit schema descriptions from the output")
 		sorted   = flag.Bool("sort", false, "sort types, fields, arguments, and enum values alphabetically for stable diffs")
 		fixTbl   = flag.Bool("fix-tables", false, "normalize markdown tables in descriptions so they render (blank lines around tables, short rows padded)")
-		exts     = flag.Bool("extensions", false, "also fetch the server's non-spec introspection fields (e.g. Shopify's requiredAccess) into <out>.extensions.json")
+		exts     = flag.String("extensions", "", "fetch the server's non-spec introspection fields: 'json' writes <out>.extensions.json, 'inline' merges them into SDL descriptions, 'both' does both")
 		stamp    = flag.Bool("stamp", false, "prepend a header comment with the generator, version, endpoint, and timestamp")
 		headers  headerFlag
 	)
@@ -63,8 +63,28 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	if *exts != "" && *exts != "json" && *exts != "inline" && *exts != "both" {
+		fmt.Fprintf(os.Stderr, "error: -extensions must be 'json', 'inline', or 'both', got %q\n", *exts)
+		os.Exit(2)
+	}
+
+	var ext gqlschema.Extensions
+	if *exts != "" {
+		ext, err = gqlschema.FetchExtensions(context.Background(), *endpoint, &gqlschema.Options{
+			Method:  *method,
+			Headers: headerMap,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	if *sorted {
 		sch.Sort()
+	}
+	if *exts == "inline" || *exts == "both" {
+		sch.Annotate(ext)
 	}
 	if *fixTbl {
 		sch.FixMarkdownTables()
@@ -83,15 +103,7 @@ func main() {
 	}
 	fmt.Printf("wrote %s\n", path)
 
-	if *exts {
-		ext, err := gqlschema.FetchExtensions(context.Background(), *endpoint, &gqlschema.Options{
-			Method:  *method,
-			Headers: headerMap,
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
+	if *exts == "json" || *exts == "both" {
 		blob, err := json.MarshalIndent(ext, "", "  ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error encoding extensions: %v\n", err)

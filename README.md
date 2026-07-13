@@ -14,7 +14,7 @@ genqlient deliberately does not introspect remote endpoints; it expects an SDL s
 - Repeatable `-header` flag for auth and any other request headers.
 - Optional `-sort` (mirroring graphql-js's `lexicographicSortSchema`) so output stays stable when a server returns definitions in a different order between runs — useful when committing the schema to track changes over time.
 - Optional `-fix-tables` to normalize GitHub-flavored-Markdown tables inside descriptions: GFM tables cannot interrupt a paragraph, and Shopify's generated `query`-argument docs ship without the required blank lines and with truncated rows. It also aligns every column to its widest cell so tables read as tables in the raw file. The fix is whitespace and empty-cell padding only — cell content is never changed.
-- Optional `-extensions` sidecar (`<out>.extensions.json`) capturing the server's non-spec introspection fields — Shopify exposes access scopes (`requiredAccess`), protected-data classes, accepted GID types, and input-size caps this way. Extension fields are auto-discovered from the server's meta-types, so the flag is vendor-neutral and a no-op on spec-only servers.
+- Optional `-extensions` capture of the server's non-spec introspection fields — Shopify exposes access scopes (`requiredAccess`), protected-data classes, accepted GID types, and input-size caps this way. `-extensions=json` writes a `<out>.extensions.json` sidecar keyed by schema coordinate, `-extensions=inline` merges the metadata into the SDL descriptions so it renders in IDE hovers and GraphiQL, `both` does both. Extension fields are auto-discovered from the server's meta-types, so the flag is vendor-neutral and a no-op on spec-only servers.
 - Optional `-stamp` header comment recording the generator, version, endpoint, and timestamp.
 - Standard library only — no third-party dependencies.
 
@@ -44,7 +44,7 @@ gqlschema -endpoint <url> [flags]
   -no-descriptions   omit schema descriptions from the output
   -sort              sort types, fields, arguments, and enum values alphabetically for stable diffs
   -fix-tables        normalize markdown tables in descriptions so they render and read well (blank lines around tables, short rows padded, columns aligned)
-  -extensions        also fetch the server's non-spec introspection fields into <out>.extensions.json
+  -extensions value  fetch the server's non-spec introspection fields: 'json' (sidecar), 'inline' (into SDL descriptions), or 'both'
   -stamp             prepend a header comment with the generator, version, endpoint, and timestamp
   -method string     HTTP method for the introspection request (default "POST")
   -header value      HTTP header as 'Key: Value' (repeatable)
@@ -89,9 +89,9 @@ transformed before printing.
 introspection metadata as a map of [schema coordinates](https://github.com/graphql/graphql-spec/pull/794)
 (`Customer.orders(id:)`) to raw JSON values. It discovers what the meta-types
 expose, queries only scalar-typed extension fields, drops access-denied ones
-automatically, and returns an empty map on spec-only servers. SDL cannot
-represent this metadata, which is why it lives in a sidecar rather than the
-schema file.
+automatically, and returns an empty map on spec-only servers. SDL cannot represent this
+metadata structurally; pair `FetchExtensions` with `Schema.Annotate(ext)` to
+merge it into descriptions, or persist the map as a sidecar.
 
 ## Wiring into genqlient
  
