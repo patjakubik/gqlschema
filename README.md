@@ -55,10 +55,47 @@ gqlschema -endpoint <url> [flags]
 ```sh
 gqlschema \
   -endpoint https://your-shop.myshopify.com/admin/api/unstable/graphql \
-  -header "X-Shopify-Access-Token: $SHOPIFY_ACCESS_TOKEN"
+  -header "X-Shopify-Access-Token: $SHOPIFY_ACCESS_TOKEN" \
+  -fix-tables \
+  -extensions=inline
 ```
  
-Writes `schema.graphql` (pass `-no-descriptions` to omit descriptions from it).
+Writes `schema.graphql` with two Shopify-specific problems handled:
+
+- `-fix-tables` repairs the markdown tables Shopify embeds in `query`-argument
+  docs — upstream they ship without the blank lines GFM requires and with
+  truncated rows, so they render as a wall of pipes; fixed and column-aligned
+  they read as tables both rendered and in the raw file.
+- `-extensions=inline` merges Shopify's non-spec introspection metadata into
+  the descriptions, so access scopes, protected customer data classes, and
+  accepted GID types show up in IDE hovers and GraphiQL:
+
+```graphql
+"""
+Represents information about a customer of the shop...
+
+- isProtected: true
+- protectedSubject: customer
+- requiredAccess: `read_customers` access scope.
+"""
+type Customer implements CommentEventSubject & HasEvents & ... {
+
+  """Returns a `Abandonment` resource by ID."""
+  abandonment(
+    """
+    The ID of the `Abandonment` to return.
+
+    - gidTypes: ["Abandonment"]
+    """
+    id: ID!
+  ): Abandonment
+```
+
+Both flags are opt-in and vendor-neutral: table fixing only touches actual
+markdown tables, and extensions are auto-discovered, so the same command is a
+plain introspection against servers that have neither. Pass `-no-descriptions`
+to omit descriptions (annotations included), or `-extensions=json` to keep the
+metadata in a `schema.extensions.json` sidecar instead.
 
 ## Use as a library
 
@@ -75,7 +112,12 @@ sch, err := gqlschema.Fetch(ctx, "https://your-shop.myshopify.com/admin/api/unst
 if err != nil {
 	return err
 }
+ext, err := gqlschema.FetchExtensions(ctx, endpoint, opts) // optional: non-spec metadata
+if err != nil {
+	return err
+}
 sch.Sort()               // optional: stable ordering, like graphql-js lexicographicSortSchema
+sch.Annotate(ext)        // optional: merge extension metadata into descriptions
 sch.FixMarkdownTables()  // optional: make markdown tables in descriptions render
 sdl := sch.SDL(nil) // or &gqlschema.SDLOptions{OmitDescriptions: true}
 ```
