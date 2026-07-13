@@ -19,10 +19,11 @@ import (
 )
 
 // introspectionQuery is the standard full introspection query, including
-// deprecated fields, directives, isRepeatable, specifiedByURL, isOneOf, and
-// input-value deprecation.
+// deprecated fields and arguments, directives, isRepeatable, specifiedByURL,
+// isOneOf, the schema description, and input-value deprecation.
 const introspectionQuery = `query IntrospectionQuery {
   __schema {
+    description
     queryType { name }
     mutationType { name }
     subscriptionType { name }
@@ -32,7 +33,7 @@ const introspectionQuery = `query IntrospectionQuery {
       description
       isRepeatable
       locations
-      args { ...InputValue }
+      args(includeDeprecated: true) { ...InputValue }
     }
   }
 }
@@ -45,7 +46,7 @@ fragment FullType on __Type {
   fields(includeDeprecated: true) {
     name
     description
-    args { ...InputValue }
+    args(includeDeprecated: true) { ...InputValue }
     type { ...TypeRef }
     isDeprecated
     deprecationReason
@@ -88,6 +89,7 @@ type introspectionResponse struct {
 
 // Schema is a GraphQL schema decoded from an introspection response.
 type Schema struct {
+	Description      *string     `json:"description"`
 	QueryType        *RootType   `json:"queryType"`
 	MutationType     *RootType   `json:"mutationType"`
 	SubscriptionType *RootType   `json:"subscriptionType"`

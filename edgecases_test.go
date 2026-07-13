@@ -200,3 +200,36 @@ func TestSortSchemaInner(t *testing.T) {
 		}
 	}
 }
+
+// A schema description prints above an explicit schema block, even when the
+// root type names are default; it is dropped with OmitDescriptions.
+func TestSchemaDescription(t *testing.T) {
+	s := &Schema{
+		Description: ptr("The API."),
+		QueryType:   &RootType{"Query"},
+		Types:       []Type{{Kind: "SCALAR", Name: "X"}},
+	}
+	want := "\"\"\"The API.\"\"\"\nschema {\n  query: Query\n}"
+	if sdl := s.SDL(nil); !strings.Contains(sdl, want) {
+		t.Errorf("schema description missing, got:\n%s", sdl)
+	}
+	if noDesc := s.SDL(&SDLOptions{OmitDescriptions: true}); strings.Contains(noDesc, "schema {") {
+		t.Errorf("default-root schema block should vanish with OmitDescriptions:\n%s", noDesc)
+	}
+}
+
+// A deprecated field argument keeps its @deprecated directive.
+func TestDeprecatedArg(t *testing.T) {
+	id := TypeRef{Kind: "SCALAR", Name: ptr("Int")}
+	s := &Schema{QueryType: &RootType{"Query"}, Types: []Type{
+		{Kind: "OBJECT", Name: "Query", Fields: []Field{{
+			Name: "image", Type: id,
+			Args: []InputValue{{Name: "maxWidth", Type: id, IsDeprecated: true,
+				DeprecationReason: ptr("Use `transform` instead.")}},
+		}}},
+	}}
+	want := "image(maxWidth: Int @deprecated(reason: \"Use `transform` instead.\")): Int"
+	if sdl := s.SDL(nil); !strings.Contains(sdl, want) {
+		t.Errorf("deprecated arg not rendered, got:\n%s", sdl)
+	}
+}

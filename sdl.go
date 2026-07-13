@@ -34,7 +34,14 @@ var builtinDirectives = map[string]bool{
 func printSchema(s *Schema, withDescriptions bool) string {
 	p := &printer{withDescriptions: withDescriptions}
 
-	if blk := schemaBlock(s); blk != "" {
+	blk := schemaBlock(s)
+	// A described schema always gets an explicit block, matching graphql-js —
+	// the description needs a definition to attach to.
+	if blk == "" && p.withDescriptions && s.Description != nil && *s.Description != "" {
+		blk = explicitSchemaBlock(s)
+	}
+	if blk != "" {
+		p.desc(s.Description, "")
 		p.line(blk)
 		p.blank()
 	}
@@ -67,6 +74,14 @@ func schemaBlock(s *Schema) string {
 	if q == "Query" && (m == "" || m == "Mutation") && (sub == "" || sub == "Subscription") {
 		return ""
 	}
+	return explicitSchemaBlock(s)
+}
+
+// explicitSchemaBlock builds the `schema { ... }` block unconditionally.
+func explicitSchemaBlock(s *Schema) string {
+	q := rootName(s.QueryType)
+	m := rootName(s.MutationType)
+	sub := rootName(s.SubscriptionType)
 	var lines []string
 	if q != "" {
 		lines = append(lines, "  query: "+q)
